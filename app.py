@@ -68,11 +68,29 @@ def model_to_jdict(model):
 def parse_args():
     args = {}
     for k, v in request.args.items():
-        # Attempt int conversion
-        try:
-            args[k] = int(v)
-        except ValueError:
-            args[k] = v
+        if "__lt" in k:
+            field_name = k.split("__lt")[0]
+            args[field_name + "__lt"] = int(v)
+        elif "__lte" in k:
+            field_name = k.split("__lte")[0]
+            args[field_name + "__lte"] = int(v)
+        elif "__gt" in k:
+            field_name = k.split("__gt")[0]
+            args[field_name + "__gt"] = int(v)
+        elif "__gte" in k:
+            field_name = k.split("__gte")[0]
+            args[field_name + "__gte"] = int(v)
+        elif "__contains" in k:
+            field_name = k.split("__contains")[0]
+            args[field_name + "__contains"] = v
+        elif "__in" in k:
+            field_name = k.split("__in")[0]
+            args[field_name + "__in"] = [item.strip() for item in v.split(",")]
+        else:
+            try:
+                args[k] = int(v)
+            except ValueError:
+                args[k] = v
     return args
 
 
