@@ -4,24 +4,26 @@ import threading
 import time
 
 from django.core import serializers
-from flask import Flask, request, Response, jsonify
+from django.http import JsonResponse, HttpResponse
+from django.urls import path
+from django.views.decorators.csrf import csrf_exempt
 from peeringdb import resource, get_backend
 from peeringdb.client import Client
+from django.conf import settings
 
-app = Flask(__name__)
 pdb = Client(cfg={
     "orm": {
         "backend": "django_peeringdb",
         "database": {
             "engine": "sqlite3",
-            "host": "",
             "name": "/data/peeringdb.sqlite3",
+            "user": "",
             "password": "",
-            "port": 0,
-            "user": ""
+            "host": "",
+            "port": "",
         },
         "migrate": True,
-        "secret_key": ""
+        "secret_key": "",
     },
     "sync": {
         "api_key": os.environ.get("PEERINGDB_API_KEY", ""),
@@ -30,33 +32,17 @@ pdb = Client(cfg={
         "strip_tz": 1,
         "timeout": 0,
         "url": "https://www.peeringdb.com/api",
-        "user": ""
+        "user": "",
     }
 })
 
+settings.ALLOWED_HOSTS = ['*']
+settings.ROOT_URLCONF = 'urls'
+settings.SECRET_KEY = '1234567890'
 
-class SyncTask(threading.Thread):
-    def run(self, *args, **kwargs):
-        rs = resource.all_resources()
-        global last_sync
-        pdb.updater.update_all(rs)
-        last_sync = time.time()
-
-
-class Scheduler(threading.Thread):
-    def run(self, *args, **kwargs):
-        global last_sync
-        while True:
-            if time.time() - last_sync > 60 * 60 * 6:  # 6 hours to seconds
-                sync.run()
-            time.sleep(60)
-
-
-sync = SyncTask()
-last_sync = 0
-sched = Scheduler()
-sched.start()
-
+sync = threading.Thread(target=pdb.updater.update_all, args=(resource.all_resources(),), daemon=True)
+sync.start()
+last_sync = time.time()
 
 def model_to_jdict(model):
     d = json.loads(serializers.serialize("json", [model]))[0]
@@ -64,10 +50,9 @@ def model_to_jdict(model):
     resp["id"] = d["pk"]
     return resp
 
-
-def parse_args():
+def parse_args(request):
     args = {}
-    for k, v in request.args.items():
+    for k, v in request.GET.items():
         if "__lt" in k:
             field_name = k.split("__lt")[0]
             args[field_name + "__lt"] = int(v)
@@ -93,90 +78,23 @@ def parse_args():
                 args[k] = v
     return args
 
-
-def find_by_args(model):
-    args = parse_args()
-    if args == {}:
-        return json.dumps({"data": [model_to_jdict(i) for i in pdb.all(model)]})
+@csrf_exempt
+def find_by_args(request, model):
+    args = parse_args(request)
+    if not args:
+        return JsonResponse({"data": [model_to_jdict(i) for i in pdb.all(model)]})
 
     out = None
     for k, v in args.items():
-        if out is None:  # Lookup first arg directly
+        if out is None:
             b = get_backend()
             out = [model_to_jdict(i) for i in b.get_objects_by(b.get_concrete(model), k, v)]
             continue
         out = [i for i in out if i.get(k) == v]
 
-    return jsonify({"data": out})
+    return JsonResponse({"data": out})
 
-
-@app.route("/api/org", methods=["GET"])
-def get_org():
-    return find_by_args(resource.Organization)
-
-
-@app.route("/api/fac", methods=["GET"])
-def get_fac():
-    return find_by_args(resource.Facility)
-
-
-@app.route("/api/net", methods=["GET"])
-def get_net():
-    return find_by_args(resource.Network)
-
-
-@app.route("/api/ix", methods=["GET"])
-def get_ix():
-    return find_by_args(resource.InternetExchange)
-
-
-@app.route("/api/campus", methods=["GET"])
-def get_campus():
-    return find_by_args(resource.Campus)
-
-
-@app.route("/api/carrier", methods=["GET"])
-def get_carrier():
-    return find_by_args(resource.Carrier)
-
-
-@app.route("/api/carrierfac", methods=["GET"])
-def get_carrierfac():
-    return find_by_args(resource.CarrierFacility)
-
-
-@app.route("/api/ixfac", methods=["GET"])
-def get_ixfac():
-    return find_by_args(resource.InternetExchangeFacility)
-
-
-@app.route("/api/ixlan", methods=["GET"])
-def get_ixlan():
-    return find_by_args(resource.InternetExchangeLan)
-
-
-@app.route("/api/ixpfx", methods=["GET"])
-def get_ixpfx():
-    return find_by_args(resource.InternetExchangeLanPrefix)
-
-
-@app.route("/api/netfac", methods=["GET"])
-def get_netfac():
-    return find_by_args(resource.NetworkFacility)
-
-
-@app.route("/api/netixlan", methods=["GET"])
-def get_netixlan():
-    return find_by_args(resource.NetworkIXLan)
-
-
-@app.route("/api/poc", methods=["GET"])
-def get_poc():
-    return find_by_args(resource.NetworkContact)
-
-
-@app.route("/metrics")
-def metrics():
+def metrics(request):
     total_orgs = len(pdb.all(resource.Organization))
     total_fac = len(pdb.all(resource.Facility))
     total_net = len(pdb.all(resource.Network))
@@ -215,16 +133,21 @@ peeringdb_sync_running {int(sync.is_alive())}
 # TYPE peeringdb_last_sync gauge
 peeringdb_last_sync {int(last_sync)}
 """
-    return Response(metrics, mimetype="text/plain")
+    return HttpResponse(metrics, content_type="text/plain")
 
-
-@app.route("/sync")
-def sync_start():
+@csrf_exempt
+def sync_start(request):
+    global sync, last_sync
     if not sync.is_alive():
+        rs = resource.all_resources()
+        sync = threading.Thread(target=pdb.updater.update_all, args=(rs,), daemon=True)
         sync.start()
-        return jsonify({"started": True})
-    return jsonify({"started": False}), 409
-
+        last_sync = time.time()
+        return JsonResponse({"started": True})
+    return JsonResponse({"started": False}, status=409)
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    import sys
+    from django.core.management import execute_from_command_line
+
+    execute_from_command_line(sys.argv)

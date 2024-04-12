@@ -2,8 +2,8 @@ FROM python:3.11.4-slim-bullseye
 ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
-RUN pip install peeringdb django-peeringdb django flask
+RUN pip install peeringdb django django-peeringdb
 
-COPY app.py /app/app.py
+COPY project/. /app/
 
-CMD [ "python3", "-m" , "flask", "run", "--host=0.0.0.0", "--port", "8080"]
+CMD ["python3", "manage.py", "runserver", "0.0.0.0:8080"]
